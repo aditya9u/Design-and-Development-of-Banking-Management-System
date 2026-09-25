@@ -1,0 +1,29 @@
+# Compiled binaries
+*.exe
+*.out
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+
+# Build folders
+build/
+bin/
+obj/
+Debug/
+Release/
+
+# VS Code / editor files
+.vscode/
+*.code-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~

@@ -1,235 +1,254 @@
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
+#include <time.h>
 #include "customer.h"
 
-#define DATA_FILE "bank_accounts.dat"
-#define LOAN_FILE "loan_applications.dat"
+static int getLoggedInAccount(const User users[], int userCount,
+                             const Account accounts[], int accountCount,
+                             int loggedInUserId) {
+    (void)users;
+    (void)userCount;
 
-void displayCustomerMenu(void) {
-    printf("\n===== Customer Dashboard =====\n");
-    printf("1. View Balance\n");
-    printf("2. Deposit Money\n");
-    printf("3. Withdraw Money\n");
-    printf("4. Transfer Funds\n");
-    printf("5. View Transaction History\n");
-    printf("6. Apply for a Loan\n");
-    printf("7. Logout\n");
-    printf("Select an option: ");
-}
-
-int loginCustomer(const Account accounts[], int count, int accountNumber, const char *password) {
-    for (int i = 0; i < count; i++) {
-        if (accounts[i].accountNumber == accountNumber && strcmp(accounts[i].password, password) == 0) {
+    for (int i = 0; i < accountCount; i++) {
+        if (accounts[i].user_id == loggedInUserId) {
             return i;
         }
     }
     return -1;
 }
 
-void viewBalance(const Account *account) {
-    if (account == NULL) {
-        printf("Account not found.\n");
-        return;
-    }
-
-    printf("\nAccount Number: %d\n", account->accountNumber);
-    printf("Customer Name: %s\n", account->name);
-    printf("Current Balance: %.2f\n", account->balance);
+void displayCustomerMenu(void) {
+    printf("\n===== Customer Dashboard =====\n");
+    printf("1. View balance\n");
+    printf("2. Deposit\n");
+    printf("3. Withdraw\n");
+    printf("4. Apply loan\n");
+    printf("5. Check transactions\n");
+    printf("6. Add feedback\n");
+    printf("7. Transfer funds\n");
+    printf("8. Logout\n");
+    printf("9. Exit\n");
+    printf("Select an option: ");
 }
 
-int depositToAccount(Account *account, double amount) {
-    if (account == NULL) {
-        return 0;
-    }
-
-    if (!lockAccount(account)) {
-        return 0;
-    }
-
-    if (amount <= 0) {
-        printf("Deposit amount must be positive.\n");
-        unlockAccount(account);
-        return 0;
-    }
-
-    account->balance += amount;
-    recordTransaction(account, "DEPOSIT", amount, "Cash deposit");
-    printf("Deposit successful. New balance: %.2f\n", account->balance);
-    unlockAccount(account);
-    return 1;
-}
-
-int withdrawFromAccount(Account *account, double amount) {
-    if (account == NULL) {
-        return 0;
-    }
-
-    if (!lockAccount(account)) {
-        return 0;
-    }
-
-    if (amount <= 0) {
-        printf("Withdrawal amount must be positive.\n");
-        unlockAccount(account);
-        return 0;
-    }
-
-    if (amount > account->balance) {
-        printf("Insufficient balance.\n");
-        unlockAccount(account);
-        return 0;
-    }
-
-    account->balance -= amount;
-    recordTransaction(account, "WITHDRAW", amount, "Cash withdrawal");
-    printf("Withdrawal successful. New balance: %.2f\n", account->balance);
-    unlockAccount(account);
-    return 1;
-}
-
-void transferFunds(Account accounts[], int count, int senderIndex) {
-    int receiverAccountNumber;
-    double amount;
-
-    if (senderIndex < 0 || senderIndex >= count) {
-        printf("Invalid sender account.\n");
-        return;
-    }
-
-    printf("Enter recipient account number: ");
-    scanf("%d", &receiverAccountNumber);
-    printf("Enter amount to transfer: ");
-    scanf("%lf", &amount);
-
-    int receiverIndex = findAccount(accounts, count, receiverAccountNumber);
-    if (receiverIndex == -1) {
-        printf("Recipient account not found.\n");
-        return;
-    }
-
-    if (receiverIndex == senderIndex) {
-        printf("You cannot transfer to the same account.\n");
-        return;
-    }
-
-    if (amount <= 0) {
-        printf("Transfer amount must be positive.\n");
-        return;
-    }
-
-    if (!lockAccount(&accounts[senderIndex]) || !lockAccount(&accounts[receiverIndex])) {
-        printf("One of the accounts is busy. Please try again later.\n");
-        return;
-    }
-
-    if (amount > accounts[senderIndex].balance) {
-        printf("Insufficient balance for transfer.\n");
-        unlockAccount(&accounts[senderIndex]);
-        unlockAccount(&accounts[receiverIndex]);
-        return;
-    }
-
-    accounts[senderIndex].balance -= amount;
-    accounts[receiverIndex].balance += amount;
-    recordTransaction(&accounts[senderIndex], "TRANSFER_OUT", amount, "Transfer to account");
-    recordTransaction(&accounts[receiverIndex], "TRANSFER_IN", amount, "Received from account");
-    printf("Transfer successful.\n");
-    printf("Remaining balance: %.2f\n", accounts[senderIndex].balance);
-    saveAccountsToFile(accounts, count, DATA_FILE);
-    unlockAccount(&accounts[senderIndex]);
-    unlockAccount(&accounts[receiverIndex]);
-}
-
-void applyForLoan(const Account *account, LoanApplication loans[], int *loanCount) {
-    if (account == NULL || *loanCount >= MAX_LOAN_APPLICATIONS) {
-        printf("Loan application limit reached.\n");
-        return;
-    }
-
-    LoanApplication application = {0};
-    application.id = 1;
-    for (int i = 0; i < *loanCount; i++) {
-        if (loans[i].id >= application.id) {
-            application.id = loans[i].id + 1;
-        }
-    }
-    application.accountNumber = account->accountNumber;
-    snprintf(application.assignedEmployeeId, sizeof(application.assignedEmployeeId),
-             "%s", DEFAULT_EMPLOYEE_ID);
-
-    printf("Enter requested loan amount: ");
-    if (scanf("%lf", &application.amount) != 1 || application.amount <= 0) {
-        printf("Loan amount must be a positive number.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-
-    int character;
-    while ((character = getchar()) != '\n' && character != EOF) { }
-    printf("Enter loan purpose: ");
-    if (fgets(application.purpose, sizeof(application.purpose), stdin) == NULL) {
-        return;
-    }
-    application.purpose[strcspn(application.purpose, "\n")] = '\0';
-    if (application.purpose[0] == '\0') {
-        printf("Loan purpose cannot be empty.\n");
-        return;
-    }
-
-    snprintf(application.status, sizeof(application.status), "PENDING");
-    loans[*loanCount] = application;
-    (*loanCount)++;
-    if (!saveLoanApplications(loans, *loanCount, LOAN_FILE)) {
-        printf("Warning: loan applications could not be saved.\n");
-    }
-    printf("Loan application #%d submitted for employee review.\n", application.id);
-}
-
-void customerDashboard(Account accounts[], int count, int loggedInIndex,
-                       LoanApplication loans[], int *loanCount) {
+void customerDashboard(User users[], int *userCount,
+                       Account accounts[], int *accountCount,
+                       Transaction transactions[], int *transactionCount,
+                       Feedback feedback[], int *feedbackCount,
+                       LoanApplication loans[], int *loanCount,
+                       int loggedInUserId) {
     int option = 0;
 
     do {
         displayCustomerMenu();
-        scanf("%d", &option);
+        if (scanf("%d", &option) != 1) {
+            printf("Invalid input.\n");
+            while (getchar() != '\n') { }
+            option = 0;
+            continue;
+        }
+
+        if (!loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat")) {
+            fprintf(stderr, "Could not refresh account data; customer session stopped.\n");
+            return;
+        }
+        int accountIndex = getLoggedInAccount(users, *userCount, accounts, *accountCount, loggedInUserId);
 
         switch (option) {
             case 1:
-                viewBalance(&accounts[loggedInIndex]);
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                } else {
+                    printf("\nAccount Number: %d\nBalance: %.2f\n", accounts[accountIndex].account_id, accounts[accountIndex].balance);
+                }
                 break;
+
             case 2: {
                 double amount;
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                    break;
+                }
                 printf("Enter deposit amount: ");
-                scanf("%lf", &amount);
-                if (depositToAccount(&accounts[loggedInIndex], amount)) {
-                    saveAccountsToFile(accounts, count, DATA_FILE);
+                if (scanf("%lf", &amount) != 1 || !isfinite(amount) || amount <= 0) {
+                    printf("Deposit amount must be a finite positive number.\n");
+                    break;
+                }
+                double balanceAfter;
+                if (submitBankTransaction(BANK_TXN_DEPOSIT,
+                                          accounts[accountIndex].account_id,
+                                          0, amount, &balanceAfter)) {
+                    accounts[accountIndex].balance = balanceAfter;
+                    printf("Deposit successful. New balance: %.2f\n", balanceAfter);
                 }
                 break;
             }
+
             case 3: {
                 double amount;
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                    break;
+                }
                 printf("Enter withdrawal amount: ");
-                scanf("%lf", &amount);
-                if (withdrawFromAccount(&accounts[loggedInIndex], amount)) {
-                    saveAccountsToFile(accounts, count, DATA_FILE);
+                if (scanf("%lf", &amount) != 1 || !isfinite(amount) || amount <= 0) {
+                    printf("Withdrawal amount must be positive.\n");
+                    break;
+                }
+                double balanceAfter;
+                if (submitBankTransaction(BANK_TXN_WITHDRAW,
+                                          accounts[accountIndex].account_id,
+                                          0, amount, &balanceAfter)) {
+                    accounts[accountIndex].balance = balanceAfter;
+                    printf("Withdrawal successful. New balance: %.2f\n", balanceAfter);
                 }
                 break;
             }
-            case 4:
-                transferFunds(accounts, count, loggedInIndex);
+
+            case 4: {
+                double amount;
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                    break;
+                }
+                printf("Enter loan amount: ");
+                if (scanf("%lf", &amount) != 1 || !isfinite(amount) || amount <= 0) {
+                    printf("Loan amount must be positive.\n");
+                    break;
+                }
+                if (!beginBankDataTransaction()) {
+                    break;
+                }
+                if (!loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat") ||
+                    !loadLoanApplications(loans, loanCount, "bank_loans.dat")) {
+                    fprintf(stderr, "Could not reload loan data; application cancelled.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                accountIndex = findAccountForUser(accounts, *accountCount, loggedInUserId);
+                if (accountIndex == -1 || !accounts[accountIndex].status) {
+                    printf("Account is unavailable or inactive.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                if (!addLoanApplication(loans, loanCount, accounts[accountIndex].account_id, amount, "Customer requested loan", 3)) {
+                    printf("Loan application could not be created.\n");
+                } else {
+                    if (saveLoanApplications(loans, *loanCount, "bank_loans.dat")) {
+                        printf("Loan request submitted.\n");
+                    } else {
+                        fprintf(stderr, "Could not save the loan application.\n");
+                    }
+                }
+                endBankDataTransaction();
                 break;
+            }
+
             case 5:
-                displayTransactionHistory(&accounts[loggedInIndex]);
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                } else if (!loadTransactionsFromFile(transactions, transactionCount, "bank_transactions.dat")) {
+                    fprintf(stderr, "Could not refresh transaction history.\n");
+                } else {
+                    printTransactions(transactions, *transactionCount, accounts[accountIndex].account_id);
+                }
                 break;
-            case 6:
-                applyForLoan(&accounts[loggedInIndex], loans, loanCount);
+
+            case 6: {
+                char message[200];
+                printf("Enter feedback: ");
+                while (getchar() != '\n') { }
+                fgets(message, sizeof(message), stdin);
+                message[strcspn(message, "\n")] = '\0';
+                if (message[0] == '\0') {
+                    printf("Feedback cannot be empty.\n");
+                    break;
+                }
+                if (!beginBankDataTransaction()) {
+                    break;
+                }
+                if (!loadFeedbackFromFile(feedback, feedbackCount, "bank_feedback.dat")) {
+                    fprintf(stderr, "Could not reload feedback data; submission cancelled.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                if (*feedbackCount >= MAX_FEEDBACK) {
+                    printf("Feedback limit reached.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                feedback[*feedbackCount].feedback_id = *feedbackCount + 1;
+                feedback[*feedbackCount].user_id = loggedInUserId;
+                snprintf(feedback[*feedbackCount].message, sizeof(feedback[*feedbackCount].message), "%s", message);
+                time_t now = time(NULL);
+                struct tm *tmInfo = localtime(&now);
+                strftime(feedback[*feedbackCount].timestamp, sizeof(feedback[*feedbackCount].timestamp), "%Y-%m-%d %H:%M:%S", tmInfo);
+                (*feedbackCount)++;
+                if (saveFeedbackToFile(feedback, *feedbackCount, "bank_feedback.dat")) {
+                    printf("Feedback saved successfully.\n");
+                } else {
+                    fprintf(stderr, "Could not save feedback.\n");
+                }
+                endBankDataTransaction();
                 break;
-            case 7:
-                printf("Customer logged out successfully.\n");
+            }
+
+            case 7: {
+                int targetAccountId;
+                double amount;
+                if (accountIndex == -1) {
+                    printf("No account found for this customer.\n");
+                    break;
+                }
+                printf("Enter target account ID: ");
+                scanf("%d", &targetAccountId);
+                printf("Enter transfer amount: ");
+                if (scanf("%lf", &amount) != 1 || !isfinite(amount)) {
+                    printf("Transfer amount must be a finite number.\n");
+                    break;
+                }
+
+                int receiverIndex = findAccountById(accounts, *accountCount, targetAccountId);
+                if (receiverIndex == -1) {
+                    printf("Recipient account not found.\n");
+                    break;
+                }
+                if (accounts[receiverIndex].user_id == loggedInUserId) {
+                    printf("You cannot transfer to your own account.\n");
+                    break;
+                }
+
+                double balanceAfter;
+                if (submitBankTransaction(BANK_TXN_TRANSFER,
+                                          accounts[accountIndex].account_id,
+                                          targetAccountId, amount, &balanceAfter)) {
+                    if (loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat")) {
+                        accountIndex = findAccountForUser(accounts, *accountCount, loggedInUserId);
+                    }
+                    printf("Transfer successful. Remaining balance: %.2f\n", balanceAfter);
+                }
                 break;
+            }
+
+            case 8:
+                if (setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                    printf("Customer logged out successfully.\n");
+                } else {
+                    fprintf(stderr, "Could not persist customer logout state.\n");
+                }
+                return;
+
+            case 9:
+                if (!setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                    fprintf(stderr, "Could not persist customer logout state.\n");
+                }
+                printf("Exiting customer dashboard.\n");
+                return;
+
             default:
                 printf("Invalid option. Please try again.\n");
                 break;
         }
-    } while (option != 7);
+    } while (option != 9 && option != 8);
 }

@@ -1,5 +1,8 @@
 # Compiled binaries
 *.exe
+banking_management_system
+*.tmp.*
+.bank_data.lock
 *.out
 *.o
 *.obj
@@ -27,3 +30,11 @@ Thumbs.db
 *.log
 *.swp
 *~
+
+# Local runtime data files
+bank_users.dat
+bank_accounts.dat
+bank_transactions.dat
+bank_feedback.dat
+bank_loans.dat
+loan_applications.dat

@@ -1,81 +1,79 @@
-# Design and Development of Banking Management System
+# Banking Management System
 
-This project is a simplified banking management system developed in C. It simulates key banking operations such as creating accounts, depositing money, withdrawing funds, and viewing account records through a console-based interface.
+This project is a file-backed, console banking demo written in C. It has customer, manager, employee, and admin roles, and uses POSIX file locks, pthreads, and pipes to coordinate concurrent transactions.
 
 ## Project Overview
 
-The system includes:
-- Customer account creation
-- Deposit and withdrawal operations
-- Employee login and customer account administration
-- Loan application submission, review, and processing
-- Concurrent TCP client access to authenticated account details
-- Balance checking
-- Customer transaction history and fund transfers
-- Menu-driven C application flow
+The current build includes role-based workflows, account and loan administration, feedback, and transaction history. Its file-backed records are stored separately, and all banking transactions pass through a worker thread.
 
 ## System Blueprint
 
-The project uses C structs and function modules rather than object-oriented classes. This class-style diagram shows the data relationships and the responsibilities of each source module.
+The project uses C structs and function modules rather than object-oriented classes. This diagram summarizes the persisted records and the main runtime modules.
 
 ```mermaid
 classDiagram
 	direction LR
 
-	class Account {
-		+int accountNumber
-		+char name[50]
+	class User {
+		+int user_id
+		+char username[20]
 		+char password[20]
+		+int role_id
+		+int is_active
+		+int is_logged_in
+	}
+
+	class Account {
+		+int account_id
+		+int user_id
 		+double balance
-		+int isLocked
-		+int transactionCount
-		+Transaction transactions[50]
+		+int status
 	}
 
 	class Transaction {
-		+int id
+		+int txn_id
+		+int account_id
 		+char type[20]
 		+double amount
-		+char date[11]
-		+char description[80]
+		+char details[80]
+		+char timestamp[20]
+	}
+
+	class Feedback {
+		+int feedback_id
+		+int user_id
+		+char message[200]
+		+char timestamp[20]
 	}
 
 	class LoanApplication {
-		+int id
-		+int accountNumber
+		+int loan_id
+		+int account_id
 		+double amount
-		+char purpose[80]
+		+char purpose[200]
 		+char status[12]
-		+char assignedEmployeeId[32]
+		+int assigned_employee_id
+		+char timestamp[20]
 	}
 
 	class ApplicationModule {
-		+main()
-		+runBankApplication()
+		+roleLogin()
+		+startTransactionWorker()
 	}
 
-	class NetworkServer {
-		+runBankServer()
-		+handleClient()
-		+receiveRequest()
-		+initializeDatabase()
+	class TransactionWorker {
+		+deposit()
+		+withdraw()
+		+transfer()
+		+requestPipe
+		+responsePipe
 	}
 
-	class NetworkClient {
-		+runBankClient()
-		+main()
-		+sendRequest()
-	}
-
-	class BankCoreModule {
-		+findAccount()
-		+loadAccountsFromFile()
-		+saveAccountsToFile()
-		+loadLoanApplications()
-		+saveLoanApplications()
-		+recordTransaction()
-		+lockPersistence()
-		+unlockPersistence()
+	class BankCore {
+		+beginBankDataTransaction()
+		+endBankDataTransaction()
+		+loadRecordsFromFile()
+		+saveRecordsToFile()
 	}
 
 	class CustomerModule {
@@ -88,149 +86,116 @@ classDiagram
 	}
 
 	class EmployeeModule {
-		+loginEmployee()
-		+employeeDashboard()
-		+addAccount()
-		+modifyCustomer()
-		+closeCustomer()
-		+displayLoanApplications()
-		+processLoanApplication()
+		+manageCustomers()
+		+processLoans()
 	}
 
-	Account "1" *-- "0..50" Transaction : records
-	LoanApplication --> Account : accountNumber
-	LoanApplication --> EmployeeModule : assignedEmployeeId
-	ApplicationModule --> BankCoreModule : initializes and persists data
+	class ManagerModule {
+		+manageAccounts()
+		+assignLoans()
+		+reviewFeedback()
+	}
+
+	class AdminModule {
+		+manageUsers()
+	}
+
+	User "1" --> "0..1" Account : owns
+	Account "1" --> "0..*" Transaction : records
+	LoanApplication --> Account : applies to
+	LoanApplication --> EmployeeModule : assigned employee
+	ApplicationModule --> BankCore : initializes and persists data
+	ApplicationModule --> TransactionWorker : starts and stops
+	TransactionWorker --> BankCore : locks and persists transactions
 	ApplicationModule --> CustomerModule : customer session
 	ApplicationModule --> EmployeeModule : employee session
-	NetworkClient --> NetworkServer : TCP login request
-	NetworkServer --> BankCoreModule : loads account database
-	NetworkServer --> CustomerModule : authenticates customer
+	ApplicationModule --> ManagerModule : manager session
+	ApplicationModule --> AdminModule : admin session
 	CustomerModule --> Account : uses
 	CustomerModule --> LoanApplication : submits
+	CustomerModule --> Feedback : submits
 	EmployeeModule --> Account : manages
-	EmployeeModule --> LoanApplication : views and processes assigned loans
-	BankCoreModule ..> Account : persists
-	BankCoreModule ..> LoanApplication : persists
+	EmployeeModule --> LoanApplication : reviews assigned loans
+	BankCore ..> User : persists
+	BankCore ..> Account : persists
+	BankCore ..> Transaction : persists
+	BankCore ..> Feedback : persists
+	BankCore ..> LoanApplication : persists
 ```
 
-## Essential Tools Installed
+## Requirements
 
-The following development tools were installed so the project can run correctly in this Windows environment:
-
-- MinGW GNU Compiler Collection (GCC)
-- WinLibs POSIX UCRT toolchain package
-- Standard command-line build support for C programs
-
-Installation command used:
-
-```powershell
-winget install --id BrechtSanders.WinLibs.POSIX.UCRT -e
-```
-
-This provides the `gcc` compiler required to build and run the project.
-
-## Verified Compiler Check
-
-The compiler was confirmed working with:
-
-```powershell
-gcc --version
-```
+This version uses POSIX APIs (`fcntl`, `pthread`, and `pipe`) and must be built on Linux, macOS, or WSL. On Windows, use a WSL Linux distribution with GCC and GNU Make installed.
 
 ## Project Files
 
 ```text
-Design-and-Development-of-Banking-Management-System/
+Banking-Management-System/
 ├── README.md
+├── docs/
+│   └── schema.png
 ├── include/
+│   ├── admin.h
 │   ├── application.h
 │   ├── bank_core.h
 │   ├── customer.h
 │   ├── employee.h
-│   ├── server.h
-│   └── client.h
+│   └── manager.h
 ├── src/
+│   ├── admin.c
 │   ├── application.c
 │   ├── bank_core.c
 │   ├── customer.c
 │   ├── employee.c
-│   ├── server.c
-│   └── client.c
+│   ├── manager.c
+│   └── transaction_worker.c
 ├── Makefile
-├── banking_management_system.exe
-├── bank_server.exe
-└── bank_client.exe
+└── .gitignore
 ```
 
 ## Build Instructions
 
-Open PowerShell in the project folder and build all three executables:
+From a Linux or WSL terminal, enter the project folder and build the console application:
 
-```powershell
-mingw32-make
+```sh
+cd /mnt/c/Users/Aditya_JU/Desktop/03-projects/software-system-project/Banking-Management-System
+make
 ```
 
-The equivalent individual compiler commands are:
+Run it from the project folder so the data files and lock file are found:
 
-```powershell
-gcc -Wall -Wextra -std=c11 -Iinclude src/application.c src/bank_core.c src/customer.c src/employee.c -o banking_management_system.exe
-gcc -Wall -Wextra -std=c11 -Iinclude src/server.c src/bank_core.c src/customer.c -lws2_32 -o bank_server.exe
-gcc -Wall -Wextra -std=c11 -Iinclude src/client.c -lws2_32 -o bank_client.exe
+```sh
+./banking_management_system
 ```
-
-Run the original local console application with:
-
-```powershell
-.\banking_management_system.exe
-```
-
-## Network Server
-
-The optional Windows TCP server lets multiple customer clients connect concurrently. It uses Winsock for networking and creates a Windows thread for each accepted client. Each client must authenticate with an account number and password; the server returns only that account's number, name, and balance. The server reads the shared `bank_accounts.dat` file for each request, so account changes made by the console application are visible without restarting the server.
-
-Start the server in one PowerShell terminal:
-
-```powershell
-.\bank_server.exe
-```
-
-The server listens on TCP port `5050` on available network interfaces. To use another port, pass it as the first argument, for example `.ank_server.exe 5051`. Start a client in another terminal:
-
-```powershell
-.\bank_client.exe 127.0.0.1 5050
-```
-
-For clients on another machine, replace `127.0.0.1` with the server machine's IP address and allow the selected TCP port through Windows Firewall. Multiple clients can start their own client process and connect at the same time. Stop the server with Ctrl+C.
-
-Account and loan file access is serialized with a named Windows mutex shared by the console application and server. This prevents simultaneous file reads/writes from racing. The network protocol sends credentials in plaintext and is intended only for trusted development networks; use TLS and proper credential protection before exposing a real banking service.
-
-The network service uses Windows system APIs where concurrency and networking require them: Winsock for TCP, `CreateThread` for client handling, and a named mutex for cross-process persistence coordination. Process management, semaphores, and other IPC mechanisms are not needed by this single-server design. Existing C file serialization remains in the shared persistence functions.
 
 ## Features Included in the Current Version
 
-- Customers can log in, view balances and transaction history, deposit, withdraw, transfer funds, and submit loan applications.
-- Employees can list accounts, add customers, modify customer names or passwords, close accounts, view assigned loan applications, and approve or reject their assigned applications.
-- Approving a loan credits the customer's account and records the credit in transaction history. Accounts with pending loan applications cannot be closed.
-- Each customer login is tracked as a single active session until logout. This console application handles one interactive session at a time.
-- Account data remains in `bank_accounts.dat`; loan applications are stored separately in `loan_applications.dat`.
+- Customers can view balances, deposit, withdraw, transfer funds, view transactions, apply for loans, and submit feedback.
+- Managers can activate/deactivate accounts, assign loan applications to employees, and review feedback.
+- Employees can create customers, modify customer details, view transactions, and approve or reject assigned loan applications.
+- Admins can create employees, modify user details, change roles, and change passwords.
+- User, account, transaction, feedback, and loan data are stored separately in `bank_users.dat`, `bank_accounts.dat`, `bank_transactions.dat`, `bank_feedback.dat`, and `bank_loans.dat`. These local runtime files are created on first run and are excluded from version control; back them up if you need to preserve your data.
+
+## Concurrent data access
+
+The application combines POSIX record locking and threads. `fcntl` locks a shared `.bank_data.lock` file to serialize data changes between processes; a `pthread_mutex_t` also serializes access between threads in one process, since POSIX `fcntl` record locks alone do not exclude sibling threads. Locked operations reload the latest file data before validation and mutation. Saves go to a temporary file and are renamed into place after a successful write.
+
+Deposits, withdrawals, and transfers are submitted to a dedicated `pthread` worker through a pair of `pipe()` channels. The worker performs the balance and transaction-history updates while holding the data lock. Pipe requests are synchronous to the UI: it waits for the worker's result before reporting success. Build with `make`; the Makefile links the POSIX threads library with `-pthread`.
+
+This remains a small file-backed demo, not a production banking database. An interruption between replacing separate data files (for example, balances and transaction history) may leave them inconsistent. Passwords are still stored in plain text; use a transactional database and password hashing for real deployments.
 
 ## User Roles
 
-### Customer
-Customers log in with their account number and password. Sample accounts are created on first run when no account data file exists: `1001 / pass1001`, `1002 / pass1002`, and `1003 / pass1003`.
-
-### Bank Employee
-Select **Employee Login** from the main menu, then sign in with the demonstration credentials:
+On first run, the program creates these demonstration users:
 
 ```text
-Employee ID: employee
-Password:   staff123
+Customer: alice / alice123
+Manager:  manager / manager123
+Employee: employee / emp123
+Admin:    admin / admin123
 ```
 
-From the employee dashboard, select **Add New Customer** to open an account; the system generates an account number automatically, starting at `1001` and continuing above the highest existing number. Select **Modify Customer Details** to change a customer's name or password, or **Close Customer Account** to close an account after confirmation. An account must have a zero balance and no pending loan applications before it can be closed. Use **View Assigned Loan Applications** to inspect applications assigned to your employee ID, then **Approve/Reject Assigned Loan Application** to process a pending application by its ID. Approval credits the requested amount to the customer's account. New and previously saved applications are assigned to the demo employee ID `employee` because the system currently has one employee login.
-
-Customer and employee dashboards end with a logout option, which returns to the main menu. The employee credentials are hard-coded demonstration credentials and must be replaced with secure credential storage before real-world use.
+Choose the corresponding role from the main menu, then enter that role's username and password. The default data is for demonstration only; passwords are stored as plain text and should not be used for a real banking service.
 
 ## Notes
 

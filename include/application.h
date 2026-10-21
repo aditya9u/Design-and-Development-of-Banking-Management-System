@@ -3,6 +3,8 @@
 
 #include "customer.h"
 #include "employee.h"
+#include "manager.h"
+#include "admin.h"
 
 int runBankApplication(void);
 

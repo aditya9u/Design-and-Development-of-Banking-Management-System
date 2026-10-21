@@ -1,276 +1,303 @@
 #include <stdio.h>
-#include <limits.h>
+#include <math.h>
 #include <string.h>
 #include "employee.h"
 
-#define DATA_FILE "bank_accounts.dat"
-#define LOAN_FILE "loan_applications.dat"
+static int chooseCustomer(User users[], int userCount) {
+    int selectedUserId = -1;
+    int found = 0;
+
+    for (int i = 0; i < userCount; i++) {
+        if (users[i].role_id == ROLE_CUSTOMER) {
+            printf("User ID: %d Username: %s\n", users[i].user_id, users[i].username);
+            found = 1;
+        }
+    }
+
+    if (!found) {
+        printf("No customers found.\n");
+        return -1;
+    }
+
+    printf("Enter customer user ID: ");
+    scanf("%d", &selectedUserId);
+    return selectedUserId;
+}
 
 void displayEmployeeMenu(void) {
     printf("\n===== Employee Dashboard =====\n");
-    printf("1. List Customer Accounts\n");
-    printf("2. Add New Customer\n");
-    printf("3. Modify Customer Details\n");
-    printf("4. Close Customer Account\n");
-    printf("5. View Assigned Loan Applications\n");
-    printf("6. Approve/Reject Assigned Loan Application\n");
-    printf("7. Logout\n");
+    printf("1. New customer\n");
+    printf("2. Modify customer details\n");
+    printf("3. Process loan application\n");
+    printf("4. View customer transactions\n");
+    printf("5. View assigned loan applications\n");
+    printf("6. Logout\n");
+    printf("7. Exit\n");
     printf("Select an option: ");
 }
 
-int loginEmployee(const char *employeeId, const char *password) {
-    return employeeId != NULL && password != NULL &&
-           strcmp(employeeId, DEFAULT_EMPLOYEE_ID) == 0 && strcmp(password, "staff123") == 0;
-}
-
-void addAccount(Account accounts[], int *count) {
-    if (*count >= MAX_ACCOUNTS) {
-        printf("Account limit reached. Cannot add more accounts.\n");
-        return;
-    }
-
-    Account newAccount = {0};
-    newAccount.accountNumber = 1001;
-    for (int i = 0; i < *count; i++) {
-        if (accounts[i].accountNumber >= newAccount.accountNumber) {
-            if (accounts[i].accountNumber == INT_MAX) {
-                printf("Cannot generate another account number.\n");
-                return;
-            }
-            newAccount.accountNumber = accounts[i].accountNumber + 1;
-        }
-    }
-
-    printf("Generated account number: %d\n", newAccount.accountNumber);
-    int character;
-    while ((character = getchar()) != '\n' && character != EOF) { }
-
-    printf("Enter account holder name: ");
-    fgets(newAccount.name, sizeof(newAccount.name), stdin);
-    newAccount.name[strcspn(newAccount.name, "\n")] = '\0';
-
-    printf("Enter password: ");
-    scanf("%19s", newAccount.password);
-
-    printf("Enter initial balance: ");
-    if (scanf("%lf", &newAccount.balance) != 1 || newAccount.balance < 0) {
-        printf("Initial balance cannot be negative.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-    newAccount.isLocked = 0;
-    newAccount.transactionCount = 0;
-
-    recordTransaction(&newAccount, "OPEN", newAccount.balance, "Account created");
-
-    accounts[*count] = newAccount;
-    (*count)++;
-    saveAccountsToFile(accounts, *count, DATA_FILE);
-    printf("Account created successfully.\n");
-}
-
-void modifyCustomer(Account accounts[], int count) {
-    int accountNumber;
-    printf("Enter account number to modify: ");
-    if (scanf("%d", &accountNumber) != 1) {
-        printf("Invalid account number.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-
-    int index = findAccount(accounts, count, accountNumber);
-    if (index == -1) {
-        printf("Customer account not found.\n");
-        return;
-    }
-
-    int option;
-    printf("1. Change customer name\n2. Change customer password\nSelect a field: ");
-    if (scanf("%d", &option) != 1) {
-        printf("Invalid option.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-
-    if (option == 1) {
-        int character;
-        while ((character = getchar()) != '\n' && character != EOF) { }
-        printf("Enter new customer name: ");
-        if (fgets(accounts[index].name, sizeof(accounts[index].name), stdin) == NULL) {
-            return;
-        }
-        accounts[index].name[strcspn(accounts[index].name, "\n")] = '\0';
-        if (accounts[index].name[0] == '\0') {
-            printf("Customer name cannot be empty.\n");
-            return;
-        }
-    } else if (option == 2) {
-        printf("Enter new customer password: ");
-        if (scanf("%19s", accounts[index].password) != 1) {
-            printf("Password was not changed.\n");
-            return;
-        }
-    } else {
-        printf("Invalid option.\n");
-        return;
-    }
-
-    saveAccountsToFile(accounts, count, DATA_FILE);
-    printf("Customer details updated successfully.\n");
-}
-
-void closeCustomer(Account accounts[], int *count,
-                   const LoanApplication loans[], int loanCount) {
-    int accountNumber;
-    printf("Enter account number to close: ");
-    if (scanf("%d", &accountNumber) != 1) {
-        printf("Invalid account number.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-
-    int index = findAccount(accounts, *count, accountNumber);
-    if (index == -1) {
-        printf("Customer account not found.\n");
-        return;
-    }
-    if (accounts[index].balance > 0.005) {
-        printf("Account cannot be closed until its balance has been withdrawn.\n");
-        return;
-    }
-    for (int i = 0; i < loanCount; i++) {
-        if (loans[i].accountNumber == accountNumber && strcmp(loans[i].status, "PENDING") == 0) {
-            printf("Account cannot be closed while a loan application is pending.\n");
-            return;
-        }
-    }
-
-    char confirmation;
-    printf("Close account %d belonging to %s? (y/n): ", accountNumber, accounts[index].name);
-    scanf(" %c", &confirmation);
-    if (confirmation != 'y' && confirmation != 'Y') {
-        printf("Account closure cancelled.\n");
-        return;
-    }
-
-    for (int i = index + 1; i < *count; i++) {
-        accounts[i - 1] = accounts[i];
-    }
-    (*count)--;
-    saveAccountsToFile(accounts, *count, DATA_FILE);
-    printf("Customer account closed successfully.\n");
-}
-
-void displayLoanApplications(const LoanApplication loans[], int loanCount,
-                             const char *employeeId) {
-    printf("\nLoan Applications\n");
-    printf("ID   Account   Amount       Status    Purpose\n");
-    int assignedCount = 0;
-    for (int i = 0; i < loanCount; i++) {
-        if (strcmp(loans[i].assignedEmployeeId, employeeId) != 0) {
-            continue;
-        }
-        printf("%-4d %-9d %-12.2f %-9s %s\n", loans[i].id, loans[i].accountNumber,
-               loans[i].amount, loans[i].status, loans[i].purpose);
-        assignedCount++;
-    }
-    if (assignedCount == 0) {
-        printf("No loan applications are assigned to employee %s.\n", employeeId);
-    }
-}
-
-void processLoanApplication(Account accounts[], int count,
-                            LoanApplication loans[], int loanCount,
-                            const char *employeeId) {
-    displayLoanApplications(loans, loanCount, employeeId);
-
-    int applicationId;
-    printf("Enter pending application ID to process: ");
-    if (scanf("%d", &applicationId) != 1) {
-        printf("Invalid application ID.\n");
-        while (getchar() != '\n') { }
-        return;
-    }
-
-    int index = -1;
-    for (int i = 0; i < loanCount; i++) {
-        if (loans[i].id == applicationId && strcmp(loans[i].status, "PENDING") == 0 &&
-            strcmp(loans[i].assignedEmployeeId, employeeId) == 0) {
-            index = i;
-            break;
-        }
-    }
-    if (index == -1) {
-        printf("Pending loan application not found.\n");
-        return;
-    }
-
-    char decision;
-    printf("Approve this application? (y/n): ");
-    scanf(" %c", &decision);
-    int accountIndex = findAccount(accounts, count, loans[index].accountNumber);
-    if ((decision == 'y' || decision == 'Y') && accountIndex == -1) {
-        printf("The customer account no longer exists; application cannot be approved.\n");
-        return;
-    }
-
-    if (decision == 'y' || decision == 'Y') {
-        snprintf(loans[index].status, sizeof(loans[index].status), "APPROVED");
-        accounts[accountIndex].balance += loans[index].amount;
-        recordTransaction(&accounts[accountIndex], "LOAN", loans[index].amount,
-                          "Loan application approved");
-        saveAccountsToFile(accounts, count, DATA_FILE);
-        printf("Loan approved and credited to account %d.\n", accounts[accountIndex].accountNumber);
-    } else if (decision == 'n' || decision == 'N') {
-        snprintf(loans[index].status, sizeof(loans[index].status), "REJECTED");
-        printf("Loan application rejected.\n");
-    } else {
-        printf("Invalid decision; application remains pending.\n");
-        return;
-    }
-    if (!saveLoanApplications(loans, loanCount, LOAN_FILE)) {
-        printf("Warning: loan applications could not be saved.\n");
-    }
-}
-
-void employeeDashboard(Account accounts[], int *count,
-                       LoanApplication loans[], int *loanCount,
-                       const char *employeeId) {
+void employeeDashboard(User users[], int *userCount,
+                      Account accounts[], int *accountCount,
+                      Transaction transactions[], int *transactionCount,
+                      Feedback feedback[], int *feedbackCount,
+                      LoanApplication loans[], int *loanCount,
+                      int loggedInUserId) {
     int option = 0;
+
     do {
         displayEmployeeMenu();
         if (scanf("%d", &option) != 1) {
-            printf("Invalid option.\n");
+            printf("Invalid input.\n");
             while (getchar() != '\n') { }
             option = 0;
             continue;
         }
 
         switch (option) {
-            case 1:
-                displayAccounts(accounts, *count);
+            case 1: {
+                User newUser = {0};
+                Account newAccount = {0};
+                printf("Enter customer username: ");
+                scanf("%19s", newUser.username);
+                printf("Enter customer password: ");
+                scanf("%19s", newUser.password);
+                if (!beginBankDataTransaction()) {
+                    break;
+                }
+                if (!loadUsersFromFile(users, userCount, "bank_users.dat") ||
+                    !loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat")) {
+                    fprintf(stderr, "Could not reload user/account data; customer creation cancelled.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                if (findUserByUsername(users, *userCount, newUser.username) != -1) {
+                    printf("Username already exists.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                if (*userCount >= MAX_USERS || *accountCount >= MAX_ACCOUNTS) {
+                    printf("User or account capacity reached.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                int maxUserId = 0;
+                for (int i = 0; i < *userCount; i++) {
+                    if (users[i].user_id > maxUserId) maxUserId = users[i].user_id;
+                }
+                newUser.user_id = maxUserId + 1;
+                newUser.role_id = ROLE_CUSTOMER;
+                newUser.is_active = 1;
+                newUser.is_logged_in = 0;
+
+                int maxAccountId = 1000;
+                for (int i = 0; i < *accountCount; i++) {
+                    if (accounts[i].account_id > maxAccountId) maxAccountId = accounts[i].account_id;
+                }
+                newAccount.account_id = maxAccountId + 1;
+                newAccount.user_id = newUser.user_id;
+                newAccount.balance = 0.0;
+                newAccount.status = 1;
+
+                users[*userCount] = newUser;
+                accounts[*accountCount] = newAccount;
+                int newUserCount = *userCount + 1;
+                int newAccountCount = *accountCount + 1;
+                if (saveUsersToFile(users, newUserCount, "bank_users.dat") &&
+                    saveAccountsToFile(accounts, newAccountCount, "bank_accounts.dat")) {
+                    *userCount = newUserCount;
+                    *accountCount = newAccountCount;
+                    printf("New customer created successfully.\n");
+                } else {
+                    fprintf(stderr, "Could not save new customer records.\n");
+                    loadUsersFromFile(users, userCount, "bank_users.dat");
+                    loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat");
+                }
+                endBankDataTransaction();
                 break;
-            case 2:
-                addAccount(accounts, count);
+            }
+
+            case 2: {
+                int customerUserId = chooseCustomer(users, *userCount);
+                if (customerUserId == -1) {
+                    break;
+                }
+                char newUsername[20];
+                char newPassword[20];
+                printf("Enter new username: ");
+                scanf("%19s", newUsername);
+                printf("Enter new password: ");
+                scanf("%19s", newPassword);
+                if (!beginBankDataTransaction()) {
+                    break;
+                }
+                if (!loadUsersFromFile(users, userCount, "bank_users.dat")) {
+                    fprintf(stderr, "Could not reload user records.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                int userIndex = findUserById(users, *userCount, customerUserId);
+                if (userIndex == -1) {
+                    printf("Customer no longer exists.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                int duplicateIndex = findUserByUsername(users, *userCount, newUsername);
+                if (duplicateIndex != -1 && duplicateIndex != userIndex) {
+                    printf("Username already exists.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                snprintf(users[userIndex].username, sizeof(users[userIndex].username), "%s", newUsername);
+                snprintf(users[userIndex].password, sizeof(users[userIndex].password), "%s", newPassword);
+                if (saveUsersToFile(users, *userCount, "bank_users.dat")) {
+                    printf("Customer details updated.\n");
+                } else {
+                    fprintf(stderr, "Could not save customer details.\n");
+                }
+                endBankDataTransaction();
                 break;
-            case 3:
-                modifyCustomer(accounts, *count);
+            }
+
+            case 3: {
+                if (!loadLoanApplications(loans, loanCount, "bank_loans.dat")) {
+                    fprintf(stderr, "Could not load loan applications.\n");
+                    break;
+                }
+                if (*loanCount == 0) {
+                    printf("No loan applications available.\n");
+                    break;
+                }
+                printLoanApplications(loans, *loanCount, 0);
+
+                int selectedLoanId;
+                printf("Enter loan ID to process: ");
+                scanf("%d", &selectedLoanId);
+
+                int loanIndex = -1;
+                for (int i = 0; i < *loanCount; i++) {
+                    if (loans[i].loan_id == selectedLoanId && strcmp(loans[i].status, "PENDING") == 0) {
+                        loanIndex = i;
+                        break;
+                    }
+                }
+                if (loanIndex == -1) {
+                    printf("Pending loan application not found.\n");
+                    break;
+                }
+
+                char decision;
+                printf("Approve this loan? (y/n): ");
+                scanf(" %c", &decision);
+                if (decision != 'y' && decision != 'Y' && decision != 'n' && decision != 'N') {
+                    printf("Invalid decision; application remains pending.\n");
+                    break;
+                }
+                if (!beginBankDataTransaction()) {
+                    break;
+                }
+                if (!loadLoanApplications(loans, loanCount, "bank_loans.dat") ||
+                    !loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat") ||
+                    !loadTransactionsFromFile(transactions, transactionCount, "bank_transactions.dat")) {
+                    fprintf(stderr, "Could not reload loan records; processing cancelled.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+                loanIndex = -1;
+                for (int i = 0; i < *loanCount; i++) {
+                    if (loans[i].loan_id == selectedLoanId &&
+                        strcmp(loans[i].status, "PENDING") == 0 &&
+                        (loans[i].assigned_employee_id == 0 ||
+                         loans[i].assigned_employee_id == loggedInUserId)) {
+                        loanIndex = i;
+                        break;
+                    }
+                }
+                if (loanIndex == -1) {
+                    printf("Loan is no longer pending or is assigned to another employee.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+
+                int accountIndex = findAccountById(accounts, *accountCount, loans[loanIndex].account_id);
+                if ((decision == 'y' || decision == 'Y') && accountIndex == -1) {
+                    printf("The customer account no longer exists; application cannot be approved.\n");
+                    endBankDataTransaction();
+                    break;
+                }
+
+                if (decision == 'y' || decision == 'Y') {
+                    if (*transactionCount >= MAX_TRANSACTIONS) {
+                        printf("Transaction history is full; loan cannot be approved.\n");
+                        endBankDataTransaction();
+                        break;
+                    }
+                    if (!accounts[accountIndex].status) {
+                        printf("Account is inactive; loan cannot be approved.\n");
+                        endBankDataTransaction();
+                        break;
+                    }
+                    if (!isfinite(accounts[accountIndex].balance + loans[loanIndex].amount)) {
+                        printf("Loan would exceed the supported account balance.\n");
+                        endBankDataTransaction();
+                        break;
+                    }
+                    snprintf(loans[loanIndex].status, sizeof(loans[loanIndex].status), "APPROVED");
+                    accounts[accountIndex].balance += loans[loanIndex].amount;
+                    addTransaction(transactions, transactionCount, loans[loanIndex].account_id, "LOAN_APPROVED", loans[loanIndex].amount, "Loan approved by employee");
+                    if (saveAccountsToFile(accounts, *accountCount, "bank_accounts.dat") &&
+                        saveTransactionsToFile(transactions, *transactionCount, "bank_transactions.dat") &&
+                        saveLoanApplications(loans, *loanCount, "bank_loans.dat")) {
+                        printf("Loan approved and credited to account %d.\n", accounts[accountIndex].account_id);
+                    } else {
+                        fprintf(stderr, "Could not persist the approved loan across all data files.\n");
+                    }
+                } else {
+                    snprintf(loans[loanIndex].status, sizeof(loans[loanIndex].status), "REJECTED");
+                    if (saveLoanApplications(loans, *loanCount, "bank_loans.dat")) {
+                        printf("Loan application rejected.\n");
+                    } else {
+                        fprintf(stderr, "Could not save loan rejection.\n");
+                    }
+                }
+                endBankDataTransaction();
                 break;
-            case 4:
-                closeCustomer(accounts, count, loans, *loanCount);
+            }
+
+            case 4: {
+                int accountId;
+                printf("Enter account ID: ");
+                scanf("%d", &accountId);
+                printTransactions(transactions, *transactionCount, accountId);
                 break;
-            case 5:
-                displayLoanApplications(loans, *loanCount, employeeId);
+            }
+
+            case 5: {
+                if (!loadLoanApplications(loans, loanCount, "bank_loans.dat")) {
+                    fprintf(stderr, "Could not load loan applications.\n");
+                } else {
+                    printLoanApplications(loans, *loanCount, loggedInUserId);
+                }
                 break;
+            }
+
             case 6:
-                processLoanApplication(accounts, *count, loans, *loanCount, employeeId);
-                break;
+                if (setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                    printf("Employee logged out successfully.\n");
+                } else {
+                    fprintf(stderr, "Could not persist employee logout state.\n");
+                }
+                return;
+
             case 7:
-                printf("Employee logged out successfully.\n");
-                break;
+                if (!setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                    fprintf(stderr, "Could not persist employee logout state.\n");
+                }
+                printf("Exiting employee dashboard.\n");
+                return;
+
             default:
-                printf("Invalid option. Please try again.\n");
+                printf("Invalid option.\n");
                 break;
         }
-    } while (option != 7);
+    } while (option != 7 && option != 6);
 }

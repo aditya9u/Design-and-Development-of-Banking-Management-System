@@ -1,6 +1,8 @@
 #ifndef BANK_CORE_H
 #define BANK_CORE_H
 
+#include <stdint.h>
+
 #define MAX_USERS 100
 #define MAX_ACCOUNTS 100
 #define MAX_TRANSACTIONS 200
@@ -93,7 +95,15 @@ int loadFeedbackFromFile(Feedback feedback[], int *count, const char *fileName);
 
 int findUserByUsername(const User users[], int count, const char *username);
 int findUserById(const User users[], int count, int userId);
-int setUserSessionState(User users[], int *count, int userId, int isLoggedIn);
+int claimUserSession(int userId, uint64_t *sessionToken);
+int isUserSessionCurrent(int userId, uint64_t sessionToken);
+int updateUserPassword(int userId, uint64_t sessionToken,
+                       const char *currentPassword, const char *newPassword);
+int restoreStaleUserSessions(void);
+int startUserSessionHeartbeat(int userId, uint64_t sessionToken);
+int stopUserSessionHeartbeat(void);
+int waitForUserSessionInput(int userId, uint64_t sessionToken);
+int releaseUserSession(int userId, uint64_t sessionToken);
 int findAccountForUser(const Account accounts[], int count, int userId);
 int findAccountById(const Account accounts[], int count, int accountId);
 

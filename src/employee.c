@@ -2,6 +2,7 @@
 #include <math.h>
 #include <string.h>
 #include "employee.h"
+#include "user_password.h"
 
 static int chooseCustomer(User users[], int userCount) {
     int selectedUserId = -1;
@@ -31,8 +32,9 @@ void displayEmployeeMenu(void) {
     printf("3. Process loan application\n");
     printf("4. View customer transactions\n");
     printf("5. View assigned loan applications\n");
-    printf("6. Logout\n");
-    printf("7. Exit\n");
+    printf("6. Change my password\n");
+    printf("7. Logout\n");
+    printf("8. Exit\n");
     printf("Select an option: ");
 }
 
@@ -41,16 +43,38 @@ void employeeDashboard(User users[], int *userCount,
                       Transaction transactions[], int *transactionCount,
                       Feedback feedback[], int *feedbackCount,
                       LoanApplication loans[], int *loanCount,
-                      int loggedInUserId) {
+                      int loggedInUserId, uint64_t sessionToken) {
     int option = 0;
 
     do {
         displayEmployeeMenu();
+        int waitingStatus = waitForUserSessionInput(loggedInUserId, sessionToken);
+        if (waitingStatus != 1) {
+            if (waitingStatus < 0) {
+                fprintf(stderr, "Could not verify employee session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
+        }
         if (scanf("%d", &option) != 1) {
+            if (feof(stdin)) {
+                return;
+            }
             printf("Invalid input.\n");
-            while (getchar() != '\n') { }
+            int character;
+            while ((character = getchar()) != '\n' && character != EOF) { }
             option = 0;
             continue;
+        }
+        int sessionStatus = isUserSessionCurrent(loggedInUserId, sessionToken);
+        if (sessionStatus != 1) {
+            if (sessionStatus < 0) {
+                fprintf(stderr, "Could not verify employee session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
         }
 
         switch (option) {
@@ -117,6 +141,10 @@ void employeeDashboard(User users[], int *userCount,
             }
 
             case 2: {
+                if (!loadUsersFromFile(users, userCount, "bank_users.dat")) {
+                    fprintf(stderr, "Could not refresh customer records.\n");
+                    break;
+                }
                 int customerUserId = chooseCustomer(users, *userCount);
                 if (customerUserId == -1) {
                     break;
@@ -266,7 +294,15 @@ void employeeDashboard(User users[], int *userCount,
             case 4: {
                 int accountId;
                 printf("Enter account ID: ");
-                scanf("%d", &accountId);
+                if (scanf("%d", &accountId) != 1) {
+                    printf("Invalid account ID.\n");
+                    break;
+                }
+                if (!loadTransactionsFromFile(transactions, transactionCount,
+                                              "bank_transactions.dat")) {
+                    fprintf(stderr, "Could not refresh transaction history.\n");
+                    break;
+                }
                 printTransactions(transactions, *transactionCount, accountId);
                 break;
             }
@@ -281,15 +317,19 @@ void employeeDashboard(User users[], int *userCount,
             }
 
             case 6:
-                if (setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                promptUserPasswordChange(loggedInUserId, sessionToken);
+                break;
+
+            case 7:
+                if (releaseUserSession(loggedInUserId, sessionToken)) {
                     printf("Employee logged out successfully.\n");
                 } else {
                     fprintf(stderr, "Could not persist employee logout state.\n");
                 }
                 return;
 
-            case 7:
-                if (!setUserSessionState(users, userCount, loggedInUserId, 0)) {
+            case 8:
+                if (!releaseUserSession(loggedInUserId, sessionToken)) {
                     fprintf(stderr, "Could not persist employee logout state.\n");
                 }
                 printf("Exiting employee dashboard.\n");
@@ -299,5 +339,5 @@ void employeeDashboard(User users[], int *userCount,
                 printf("Invalid option.\n");
                 break;
         }
-    } while (option != 7 && option != 6);
+    } while (option != 8 && option != 7);
 }

@@ -9,6 +9,6 @@ void managerDashboard(User users[], int *userCount,
                      Transaction transactions[], int *transactionCount,
                      Feedback feedback[], int *feedbackCount,
                      LoanApplication loans[], int *loanCount,
-                     int loggedInUserId);
+                     int loggedInUserId, uint64_t sessionToken);
 
 #endif

@@ -6,16 +6,34 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "bank_core.h"
 
 #define BANK_DATA_LOCK_FILE ".bank_data.lock"
+#define BANK_SESSION_FILE "bank_sessions.dat"
+#define BANK_SESSION_GRACE_SECONDS 30
+
+typedef struct {
+    int userId;
+    pid_t ownerPid;
+    uint64_t generation;
+    int active;
+    uint32_t lastHeartbeat;
+} UserSession;
 
 static pthread_mutex_t bankThreadMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t sessionHeartbeatMutex = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local unsigned int bankLockDepth;
 static _Thread_local int bankLockFileDescriptor = -1;
+static pthread_t sessionHeartbeatThread;
+static int sessionHeartbeatRunning;
+static int sessionHeartbeatStarted;
+static int sessionHeartbeatUserId;
+static uint64_t sessionHeartbeatToken;
 
 int beginBankDataTransaction(void) {
     if (bankLockDepth > 0) {
@@ -181,7 +199,7 @@ static int saveRecordsToFile(const void *records, size_t recordSize, int count,
         endBankDataTransaction();
         return 0;
     }
-    int syncDescriptor = open(temporaryName, O_RDONLY);
+    int syncDescriptor = open(temporaryName, O_RDWR);
     if (syncDescriptor == -1 || fsync(syncDescriptor) == -1) {
         fprintf(stderr, "Could not sync temporary data file %s: %s.\n",
                 temporaryName, strerror(errno));
@@ -274,6 +292,30 @@ int loadFeedbackFromFile(Feedback feedback[], int *count, const char *fileName) 
     return loadRecordsFromFile(feedback, sizeof(Feedback), count, MAX_FEEDBACK, fileName);
 }
 
+static int loadUserSessions(UserSession sessions[], int *count) {
+    FILE *file = fopen(BANK_SESSION_FILE, "rb");
+    if (file == NULL) {
+        if (errno == ENOENT) {
+            *count = 0;
+            return 1;
+        }
+        fprintf(stderr, "Could not open user session data: %s.\n", strerror(errno));
+        return 0;
+    }
+    fclose(file);
+    return loadRecordsFromFile(sessions, sizeof(UserSession), count,
+                               MAX_USERS, BANK_SESSION_FILE);
+}
+
+static int findUserSession(const UserSession sessions[], int count, int userId) {
+    for (int i = 0; i < count; i++) {
+        if (sessions[i].userId == userId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 int findUserByUsername(const User users[], int count, const char *username) {
     for (int i = 0; i < count; i++) {
         if (strcmp(users[i].username, username) == 0) {
@@ -292,30 +334,432 @@ int findUserById(const User users[], int count, int userId) {
     return -1;
 }
 
-int setUserSessionState(User users[], int *count, int userId, int isLoggedIn) {
-    if (count == NULL || !beginBankDataTransaction()) {
+int claimUserSession(int userId, uint64_t *sessionToken) {
+    if (sessionToken == NULL) {
+        return 0;
+    }
+    if (!restoreStaleUserSessions()) {
+        return 0;
+    }
+    if (!beginBankDataTransaction()) {
         return 0;
     }
 
     User currentUsers[MAX_USERS];
     int currentCount = 0;
+    UserSession sessions[MAX_USERS] = {0};
+    int sessionCount = 0;
+    if (!loadUsersFromFile(currentUsers, &currentCount, "bank_users.dat") ||
+        !loadUserSessions(sessions, &sessionCount)) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    int userIndex = findUserById(currentUsers, currentCount, userId);
+    if (userIndex == -1 || !currentUsers[userIndex].is_active) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    int sessionIndex = findUserSession(sessions, sessionCount, userId);
+    if (sessionIndex == -1) {
+        if (sessionCount >= MAX_USERS) {
+            endBankDataTransaction();
+            return 0;
+        }
+        sessionIndex = sessionCount++;
+        sessions[sessionIndex].userId = userId;
+    }
+    if (sessions[sessionIndex].active) {
+        time_t now = time(NULL);
+        if (now < 0 || (uint64_t)now > UINT32_MAX) {
+            fprintf(stderr, "System time is outside the supported session timer range.\n");
+            endBankDataTransaction();
+            return 0;
+        }
+        int ownerIsAlive = sessions[sessionIndex].ownerPid > 0 &&
+                           (kill(sessions[sessionIndex].ownerPid, 0) == 0 ||
+                            errno == EPERM);
+        int heartbeatIsFresh = sessions[sessionIndex].lastHeartbeat != 0 &&
+                               (uint32_t)now >= sessions[sessionIndex].lastHeartbeat &&
+                               (uint32_t)now - sessions[sessionIndex].lastHeartbeat <
+                                   BANK_SESSION_GRACE_SECONDS;
+        if (ownerIsAlive && heartbeatIsFresh) {
+            endBankDataTransaction();
+            return -2;
+        }
+        if (heartbeatIsFresh) {
+            endBankDataTransaction();
+            return -1;
+        }
+    }
+    if (sessions[sessionIndex].generation == UINT64_MAX) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    UserSession previousSession = sessions[sessionIndex];
+    sessions[sessionIndex].generation++;
+    sessions[sessionIndex].ownerPid = getpid();
+    sessions[sessionIndex].active = 1;
+    time_t now = time(NULL);
+    if (now < 0 || (uint64_t)now > UINT32_MAX) {
+        sessions[sessionIndex] = previousSession;
+        endBankDataTransaction();
+        return 0;
+    }
+    sessions[sessionIndex].lastHeartbeat = (uint32_t)now;
+    currentUsers[userIndex].is_logged_in = 1;
+    uint64_t newToken = sessions[sessionIndex].generation;
+
+    int saved = saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                                 MAX_USERS, BANK_SESSION_FILE);
+    if (saved && !saveUsersToFile(currentUsers, currentCount, "bank_users.dat")) {
+        sessions[sessionIndex] = previousSession;
+        if (!saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                               MAX_USERS, BANK_SESSION_FILE)) {
+            fprintf(stderr, "Could not roll back the user session claim.\n");
+        }
+        saved = 0;
+    }
+    if (saved) {
+        *sessionToken = newToken;
+    }
+
+    endBankDataTransaction();
+    return saved;
+}
+
+int isUserSessionCurrent(int userId, uint64_t sessionToken) {
+    if (!beginBankDataTransaction()) {
+        return -1;
+    }
+
+    UserSession sessions[MAX_USERS] = {0};
+    int sessionCount = 0;
+    if (!loadUserSessions(sessions, &sessionCount)) {
+        endBankDataTransaction();
+        return -1;
+    }
+
+    int sessionIndex = findUserSession(sessions, sessionCount, userId);
+    int isCurrent = sessionIndex != -1 &&
+                    sessions[sessionIndex].active &&
+                    sessions[sessionIndex].generation == sessionToken;
+    endBankDataTransaction();
+    return isCurrent;
+}
+
+int updateUserPassword(int userId, uint64_t sessionToken,
+                       const char *currentPassword, const char *newPassword) {
+    if (currentPassword == NULL || newPassword == NULL ||
+        newPassword[0] == '\0' || strlen(newPassword) >= sizeof(((User *)0)->password)) {
+        return 0;
+    }
+    if (!beginBankDataTransaction()) {
+        return 0;
+    }
+
+    int sessionStatus = isUserSessionCurrent(userId, sessionToken);
+    if (sessionStatus != 1) {
+        endBankDataTransaction();
+        return sessionStatus == 0 ? -2 : 0;
+    }
+
+    User currentUsers[MAX_USERS];
+    int currentCount = 0;
     if (!loadUsersFromFile(currentUsers, &currentCount, "bank_users.dat")) {
+        fprintf(stderr, "Could not load user records for password change.\n");
         endBankDataTransaction();
         return 0;
     }
 
     int userIndex = findUserById(currentUsers, currentCount, userId);
     if (userIndex == -1) {
+        fprintf(stderr, "Could not find the active user for password change.\n");
+        endBankDataTransaction();
+        return 0;
+    }
+    if (strcmp(currentUsers[userIndex].password, currentPassword) != 0) {
+        endBankDataTransaction();
+        return -1;
+    }
+
+    snprintf(currentUsers[userIndex].password,
+             sizeof(currentUsers[userIndex].password), "%s", newPassword);
+    int saved = saveUsersToFile(currentUsers, currentCount, "bank_users.dat");
+    if (!saved) {
+        fprintf(stderr, "Could not save the updated password.\n");
+    }
+    endBankDataTransaction();
+    return saved ? 1 : 0;
+}
+
+int restoreStaleUserSessions(void) {
+    if (!beginBankDataTransaction()) {
+        return 0;
+    }
+
+    UserSession sessions[MAX_USERS] = {0};
+    int sessionCount = 0;
+    User currentUsers[MAX_USERS];
+    int currentCount = 0;
+    if (!loadUserSessions(sessions, &sessionCount) ||
+        !loadUsersFromFile(currentUsers, &currentCount, "bank_users.dat")) {
         endBankDataTransaction();
         return 0;
     }
 
-    currentUsers[userIndex].is_logged_in = isLoggedIn != 0;
-    int saved = saveUsersToFile(currentUsers, currentCount, "bank_users.dat");
-    if (saved) {
-        memcpy(users, currentUsers, (size_t)currentCount * sizeof(User));
-        *count = currentCount;
+    time_t currentTime = time(NULL);
+    if (currentTime < 0 || (uint64_t)currentTime > UINT32_MAX) {
+        fprintf(stderr, "System time is outside the supported session timer range.\n");
+        endBankDataTransaction();
+        return 0;
     }
+    uint32_t now = (uint32_t)currentTime;
+    UserSession previousSessions[MAX_USERS];
+    memcpy(previousSessions, sessions, (size_t)sessionCount * sizeof(UserSession));
+    int changed = 0;
+    for (int i = 0; i < sessionCount; i++) {
+        if (!sessions[i].active) {
+            continue;
+        }
+        int ownerIsAlive = sessions[i].ownerPid > 0 &&
+                           (kill(sessions[i].ownerPid, 0) == 0 || errno == EPERM);
+        int heartbeatIsFresh = sessions[i].lastHeartbeat != 0 &&
+                               now >= sessions[i].lastHeartbeat &&
+                               now - sessions[i].lastHeartbeat <
+                                   BANK_SESSION_GRACE_SECONDS;
+        if (ownerIsAlive && heartbeatIsFresh) {
+            continue;
+        }
+        if (heartbeatIsFresh) {
+            continue;
+        }
+        sessions[i].active = 0;
+        sessions[i].ownerPid = 0;
+        sessions[i].lastHeartbeat = 0;
+        int userIndex = findUserById(currentUsers, currentCount, sessions[i].userId);
+        if (userIndex != -1) {
+            currentUsers[userIndex].is_logged_in = 0;
+        }
+        changed = 1;
+    }
+
+    if (!changed) {
+        endBankDataTransaction();
+        return 1;
+    }
+
+    int saved = saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                                  MAX_USERS, BANK_SESSION_FILE);
+    if (saved && !saveUsersToFile(currentUsers, currentCount, "bank_users.dat")) {
+        fprintf(stderr, "Could not reset stale user login status.\n");
+        memcpy(sessions, previousSessions, (size_t)sessionCount * sizeof(UserSession));
+        if (!saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                               MAX_USERS, BANK_SESSION_FILE)) {
+            fprintf(stderr, "Could not restore stale session records.\n");
+        }
+        saved = 0;
+    }
+    endBankDataTransaction();
+    return saved;
+}
+
+static int refreshUserSessionHeartbeat(int userId, uint64_t sessionToken) {
+    if (!beginBankDataTransaction()) {
+        return 0;
+    }
+
+    UserSession sessions[MAX_USERS] = {0};
+    int sessionCount = 0;
+    if (!loadUserSessions(sessions, &sessionCount)) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    int sessionIndex = findUserSession(sessions, sessionCount, userId);
+    if (sessionIndex == -1 || !sessions[sessionIndex].active ||
+        sessions[sessionIndex].generation != sessionToken) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    time_t currentTime = time(NULL);
+    if (currentTime < 0 || (uint64_t)currentTime > UINT32_MAX) {
+        fprintf(stderr, "System time is outside the supported session timer range.\n");
+        endBankDataTransaction();
+        return 0;
+    }
+    uint32_t now = (uint32_t)currentTime;
+    if (sessions[sessionIndex].lastHeartbeat == now) {
+        endBankDataTransaction();
+        return 1;
+    }
+
+    sessions[sessionIndex].lastHeartbeat = now;
+    int saved = saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                                  MAX_USERS, BANK_SESSION_FILE);
+    endBankDataTransaction();
+    return saved;
+}
+
+static void *sessionHeartbeatWorker(void *unused) {
+    (void)unused;
+    for (;;) {
+        int error = pthread_mutex_lock(&sessionHeartbeatMutex);
+        if (error != 0) {
+            fprintf(stderr, "Could not read session heartbeat state: %s.\n", strerror(error));
+            return NULL;
+        }
+        int running = sessionHeartbeatRunning;
+        int userId = sessionHeartbeatUserId;
+        uint64_t token = sessionHeartbeatToken;
+        pthread_mutex_unlock(&sessionHeartbeatMutex);
+        if (!running) {
+            return NULL;
+        }
+
+        struct timespec delay = {1, 0};
+        int sleepResult;
+        do {
+            sleepResult = nanosleep(&delay, &delay);
+        } while (sleepResult == -1 && errno == EINTR);
+        if (sleepResult == -1) {
+            fprintf(stderr, "Could not wait for session heartbeat: %s.\n", strerror(errno));
+            return NULL;
+        }
+
+        if (!refreshUserSessionHeartbeat(userId, token)) {
+            return NULL;
+        }
+    }
+}
+
+int startUserSessionHeartbeat(int userId, uint64_t sessionToken) {
+    int error = pthread_mutex_lock(&sessionHeartbeatMutex);
+    if (error != 0) {
+        fprintf(stderr, "Could not lock session heartbeat state: %s.\n", strerror(error));
+        return 0;
+    }
+    if (sessionHeartbeatStarted) {
+        pthread_mutex_unlock(&sessionHeartbeatMutex);
+        fprintf(stderr, "A session heartbeat is already running.\n");
+        return 0;
+    }
+
+    sessionHeartbeatUserId = userId;
+    sessionHeartbeatToken = sessionToken;
+    sessionHeartbeatRunning = 1;
+    error = pthread_create(&sessionHeartbeatThread, NULL, sessionHeartbeatWorker, NULL);
+    if (error != 0) {
+        sessionHeartbeatRunning = 0;
+        pthread_mutex_unlock(&sessionHeartbeatMutex);
+        fprintf(stderr, "Could not start session heartbeat: %s.\n", strerror(error));
+        return 0;
+    }
+    sessionHeartbeatStarted = 1;
+    pthread_mutex_unlock(&sessionHeartbeatMutex);
+    return 1;
+}
+
+int stopUserSessionHeartbeat(void) {
+    int error = pthread_mutex_lock(&sessionHeartbeatMutex);
+    if (error != 0) {
+        fprintf(stderr, "Could not lock session heartbeat state: %s.\n", strerror(error));
+        return 0;
+    }
+    int started = sessionHeartbeatStarted;
+    sessionHeartbeatRunning = 0;
+    pthread_t thread = sessionHeartbeatThread;
+    pthread_mutex_unlock(&sessionHeartbeatMutex);
+    if (!started) {
+        return 1;
+    }
+
+    error = pthread_join(thread, NULL);
+    if (error != 0) {
+        fprintf(stderr, "Could not stop session heartbeat: %s.\n", strerror(error));
+        return 0;
+    }
+
+    error = pthread_mutex_lock(&sessionHeartbeatMutex);
+    if (error != 0) {
+        fprintf(stderr, "Could not finalize session heartbeat state: %s.\n", strerror(error));
+        return 0;
+    }
+    sessionHeartbeatStarted = 0;
+    sessionHeartbeatUserId = 0;
+    sessionHeartbeatToken = 0;
+    pthread_mutex_unlock(&sessionHeartbeatMutex);
+    return 1;
+}
+
+int waitForUserSessionInput(int userId, uint64_t sessionToken) {
+    for (;;) {
+        int sessionStatus = isUserSessionCurrent(userId, sessionToken);
+        if (sessionStatus != 1) {
+            return sessionStatus;
+        }
+
+        fd_set inputDescriptors;
+        FD_ZERO(&inputDescriptors);
+        FD_SET(STDIN_FILENO, &inputDescriptors);
+        struct timeval timeout = {0, 250000};
+        int ready = select(STDIN_FILENO + 1, &inputDescriptors, NULL, NULL, &timeout);
+        if (ready > 0) {
+            return 1;
+        }
+        if (ready == 0 || errno == EINTR) {
+            continue;
+        }
+        fprintf(stderr, "Could not wait for session input: %s.\n", strerror(errno));
+        return -1;
+    }
+}
+
+int releaseUserSession(int userId, uint64_t sessionToken) {
+    if (!beginBankDataTransaction()) {
+        return 0;
+    }
+
+    UserSession sessions[MAX_USERS] = {0};
+    int sessionCount = 0;
+    User currentUsers[MAX_USERS];
+    int currentCount = 0;
+    if (!loadUserSessions(sessions, &sessionCount) ||
+        !loadUsersFromFile(currentUsers, &currentCount, "bank_users.dat")) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    int sessionIndex = findUserSession(sessions, sessionCount, userId);
+    int userIndex = findUserById(currentUsers, currentCount, userId);
+    if (sessionIndex == -1 || userIndex == -1 ||
+        !sessions[sessionIndex].active ||
+        sessions[sessionIndex].generation != sessionToken) {
+        endBankDataTransaction();
+        return 0;
+    }
+
+    sessions[sessionIndex].active = 0;
+    sessions[sessionIndex].ownerPid = 0;
+    sessions[sessionIndex].lastHeartbeat = 0;
+    currentUsers[userIndex].is_logged_in = 0;
+    if (!saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                           MAX_USERS, BANK_SESSION_FILE)) {
+        endBankDataTransaction();
+        return 0;
+    }
+    int saved = saveUsersToFile(currentUsers, currentCount, "bank_users.dat");
+    if (!saved) {
+        sessions[sessionIndex].active = 1;
+        if (!saveRecordsToFile(sessions, sizeof(UserSession), sessionCount,
+                               MAX_USERS, BANK_SESSION_FILE)) {
+            fprintf(stderr, "Could not restore the active user session.\n");
+        }
+    }
+
     endBankDataTransaction();
     return saved;
 }

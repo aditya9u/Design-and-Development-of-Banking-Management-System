@@ -1,14 +1,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "manager.h"
+#include "user_password.h"
 
 void displayManagerMenu(void) {
     printf("\n===== Manager Dashboard =====\n");
     printf("1. Activate/Deactivate accounts\n");
     printf("2. Assign loans\n");
     printf("3. Review customer feedback\n");
-    printf("4. Logout\n");
-    printf("5. Exit\n");
+    printf("4. Change my password\n");
+    printf("5. Logout\n");
+    printf("6. Exit\n");
     printf("Select an option: ");
 }
 
@@ -17,16 +19,38 @@ void managerDashboard(User users[], int *userCount,
                      Transaction transactions[], int *transactionCount,
                      Feedback feedback[], int *feedbackCount,
                      LoanApplication loans[], int *loanCount,
-                     int loggedInUserId) {
+                     int loggedInUserId, uint64_t sessionToken) {
     int option = 0;
 
     do {
         displayManagerMenu();
+        int waitingStatus = waitForUserSessionInput(loggedInUserId, sessionToken);
+        if (waitingStatus != 1) {
+            if (waitingStatus < 0) {
+                fprintf(stderr, "Could not verify manager session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
+        }
         if (scanf("%d", &option) != 1) {
+            if (feof(stdin)) {
+                return;
+            }
             printf("Invalid input.\n");
-            while (getchar() != '\n') { }
+            int character;
+            while ((character = getchar()) != '\n' && character != EOF) { }
             option = 0;
             continue;
+        }
+        int sessionStatus = isUserSessionCurrent(loggedInUserId, sessionToken);
+        if (sessionStatus != 1) {
+            if (sessionStatus < 0) {
+                fprintf(stderr, "Could not verify manager session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
         }
 
         switch (option) {
@@ -66,8 +90,11 @@ void managerDashboard(User users[], int *userCount,
             }
 
             case 2: {
-                loadLoanApplications(loans, loanCount, "bank_loans.dat");
-                loadUsersFromFile(users, userCount, "bank_users.dat");
+                if (!loadLoanApplications(loans, loanCount, "bank_loans.dat") ||
+                    !loadUsersFromFile(users, userCount, "bank_users.dat")) {
+                    fprintf(stderr, "Could not load loan assignments or employee records.\n");
+                    break;
+                }
                 if (*loanCount == 0) {
                     printf("No loan applications available to assign.\n");
                     break;
@@ -162,15 +189,19 @@ void managerDashboard(User users[], int *userCount,
                 break;
 
             case 4:
-                if (setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                promptUserPasswordChange(loggedInUserId, sessionToken);
+                break;
+
+            case 5:
+                if (releaseUserSession(loggedInUserId, sessionToken)) {
                     printf("Manager logged out successfully.\n");
                 } else {
                     fprintf(stderr, "Could not persist manager logout state.\n");
                 }
                 return;
 
-            case 5:
-                if (!setUserSessionState(users, userCount, loggedInUserId, 0)) {
+            case 6:
+                if (!releaseUserSession(loggedInUserId, sessionToken)) {
                     fprintf(stderr, "Could not persist manager logout state.\n");
                 }
                 printf("Exiting manager dashboard.\n");
@@ -180,5 +211,5 @@ void managerDashboard(User users[], int *userCount,
                 printf("Invalid option.\n");
                 break;
         }
-    } while (option != 5 && option != 4);
+    } while (option != 6 && option != 5);
 }

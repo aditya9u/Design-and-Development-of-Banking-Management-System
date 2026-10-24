@@ -33,8 +33,8 @@ Thumbs.db
 
 # Local runtime data files
 bank_users.dat
+bank_sessions.dat
 bank_accounts.dat
 bank_transactions.dat
 bank_feedback.dat
 bank_loans.dat
-loan_applications.dat

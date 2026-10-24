@@ -125,7 +125,7 @@ classDiagram
 
 ## Requirements
 
-This version uses POSIX APIs (`fcntl`, `pthread`, and `pipe`) and must be built on Linux, macOS, or WSL. On Windows, use a WSL Linux distribution with GCC and GNU Make installed.
+This version uses POSIX APIs (`fcntl`, `pthread`, and `pipe`). Build the native POSIX application on Linux, macOS, or WSL. On Windows, build the `.exe` from an MSYS2 MSYS terminal; it uses the MSYS2 runtime, so launch it from that terminal too.
 
 ## Project Files
 
@@ -140,7 +140,8 @@ Banking-Management-System/
 │   ├── bank_core.h
 │   ├── customer.h
 │   ├── employee.h
-│   └── manager.h
+│   ├── manager.h
+│   └── user_password.h
 ├── src/
 │   ├── admin.c
 │   ├── application.c
@@ -148,7 +149,8 @@ Banking-Management-System/
 │   ├── customer.c
 │   ├── employee.c
 │   ├── manager.c
-│   └── transaction_worker.c
+│   ├── transaction_worker.c
+│   └── user_password.c
 ├── Makefile
 └── .gitignore
 ```
@@ -168,19 +170,38 @@ Run it from the project folder so the data files and lock file are found:
 ./banking_management_system
 ```
 
+To build the Windows executable, install GCC and GNU Make in MSYS2, open an MSYS2 MSYS terminal, and run:
+
+```sh
+cd /c/Users/Aditya_JU/Desktop/03-projects/software-system-project/Banking-Management-System
+make windows
+```
+
+The build places the required MSYS2 runtime DLLs beside the executable. You can then launch it directly from PowerShell:
+
+```powershell
+Set-Location 'C:\Users\Aditya_JU\Desktop\03-projects\software-system-project\Banking-Management-System'
+.\banking_management_system.exe
+```
+
+Use `make clean` to remove both generated executables. It does not remove the banking data files.
+
 ## Features Included in the Current Version
 
 - Customers can view balances, deposit, withdraw, transfer funds, view transactions, apply for loans, and submit feedback.
+- Customers, managers, employees, and admins can change their own password from their dashboard after verifying the current password. Admins can also reset another user's password.
 - Managers can activate/deactivate accounts, assign loan applications to employees, and review feedback.
 - Employees can create customers, modify customer details, view transactions, and approve or reject assigned loan applications.
-- Admins can create employees, modify user details, change roles, and change passwords.
-- User, account, transaction, feedback, and loan data are stored separately in `bank_users.dat`, `bank_accounts.dat`, `bank_transactions.dat`, `bank_feedback.dat`, and `bank_loans.dat`. These local runtime files are created on first run and are excluded from version control; back them up if you need to preserve your data.
+- Admins can create employees, modify user details, and change roles.
+- User, account, transaction, feedback, loan, and active-session data are stored in `bank_users.dat`, `bank_accounts.dat`, `bank_transactions.dat`, `bank_feedback.dat`, `bank_loans.dat`, and `bank_sessions.dat`. These local runtime files are created as needed and excluded from version control; back up the business data files if you need to preserve your data.
 
 ## Concurrent data access
 
 The application combines POSIX record locking and threads. `fcntl` locks a shared `.bank_data.lock` file to serialize data changes between processes; a `pthread_mutex_t` also serializes access between threads in one process, since POSIX `fcntl` record locks alone do not exclude sibling threads. Locked operations reload the latest file data before validation and mutation. Saves go to a temporary file and are renamed into place after a successful write.
 
 Deposits, withdrawals, and transfers are submitted to a dedicated `pthread` worker through a pair of `pipe()` channels. The worker performs the balance and transaction-history updates while holding the data lock. Pipe requests are synchronous to the UI: it waits for the worker's result before reporting success. Build with `make`; the Makefile links the POSIX threads library with `-pthread`.
+
+Only one active session is allowed per user. A login from another running copy is rejected with an “already has an active session” message. Active sessions refresh a heartbeat once per second. If the app exits without logging out, the session remains unavailable for a 30-second grace period after its last heartbeat; the next startup or login attempt clears it when that period has elapsed. A normal in-app logout clears the session immediately. No background service is required.
 
 This remains a small file-backed demo, not a production banking database. An interruption between replacing separate data files (for example, balances and transaction history) may leave them inconsistent. Passwords are still stored in plain text; use a transactional database and password hashing for real deployments.
 

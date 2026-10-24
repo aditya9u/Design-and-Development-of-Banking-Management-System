@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include "customer.h"
+#include "user_password.h"
 
 static int getLoggedInAccount(const User users[], int userCount,
                              const Account accounts[], int accountCount,
@@ -27,8 +28,9 @@ void displayCustomerMenu(void) {
     printf("5. Check transactions\n");
     printf("6. Add feedback\n");
     printf("7. Transfer funds\n");
-    printf("8. Logout\n");
-    printf("9. Exit\n");
+    printf("8. Change my password\n");
+    printf("9. Logout\n");
+    printf("10. Exit\n");
     printf("Select an option: ");
 }
 
@@ -37,16 +39,38 @@ void customerDashboard(User users[], int *userCount,
                        Transaction transactions[], int *transactionCount,
                        Feedback feedback[], int *feedbackCount,
                        LoanApplication loans[], int *loanCount,
-                       int loggedInUserId) {
+                       int loggedInUserId, uint64_t sessionToken) {
     int option = 0;
 
     do {
         displayCustomerMenu();
+        int waitingStatus = waitForUserSessionInput(loggedInUserId, sessionToken);
+        if (waitingStatus != 1) {
+            if (waitingStatus < 0) {
+                fprintf(stderr, "Could not verify customer session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
+        }
         if (scanf("%d", &option) != 1) {
+            if (feof(stdin)) {
+                return;
+            }
             printf("Invalid input.\n");
-            while (getchar() != '\n') { }
+            int character;
+            while ((character = getchar()) != '\n' && character != EOF) { }
             option = 0;
             continue;
+        }
+        int sessionStatus = isUserSessionCurrent(loggedInUserId, sessionToken);
+        if (sessionStatus != 1) {
+            if (sessionStatus < 0) {
+                fprintf(stderr, "Could not verify customer session; session stopped.\n");
+            } else {
+                printf("You were logged out because this account signed in elsewhere.\n");
+            }
+            return;
         }
 
         if (!loadAccountsFromFile(accounts, accountCount, "bank_accounts.dat")) {
@@ -158,8 +182,14 @@ void customerDashboard(User users[], int *userCount,
             case 6: {
                 char message[200];
                 printf("Enter feedback: ");
-                while (getchar() != '\n') { }
-                fgets(message, sizeof(message), stdin);
+                int character;
+                while ((character = getchar()) != '\n' && character != EOF) { }
+                if (character == EOF) {
+                    return;
+                }
+                if (fgets(message, sizeof(message), stdin) == NULL) {
+                    return;
+                }
                 message[strcspn(message, "\n")] = '\0';
                 if (message[0] == '\0') {
                     printf("Feedback cannot be empty.\n");
@@ -232,15 +262,19 @@ void customerDashboard(User users[], int *userCount,
             }
 
             case 8:
-                if (setUserSessionState(users, userCount, loggedInUserId, 0)) {
+                promptUserPasswordChange(loggedInUserId, sessionToken);
+                break;
+
+            case 9:
+                if (releaseUserSession(loggedInUserId, sessionToken)) {
                     printf("Customer logged out successfully.\n");
                 } else {
                     fprintf(stderr, "Could not persist customer logout state.\n");
                 }
                 return;
 
-            case 9:
-                if (!setUserSessionState(users, userCount, loggedInUserId, 0)) {
+            case 10:
+                if (!releaseUserSession(loggedInUserId, sessionToken)) {
                     fprintf(stderr, "Could not persist customer logout state.\n");
                 }
                 printf("Exiting customer dashboard.\n");
@@ -250,5 +284,5 @@ void customerDashboard(User users[], int *userCount,
                 printf("Invalid option. Please try again.\n");
                 break;
         }
-    } while (option != 9 && option != 8);
+    } while (option != 10 && option != 9);
 }

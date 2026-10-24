@@ -10,8 +10,7 @@ static int loginUser(User users[], int userCount, int roleId,
         if (users[i].role_id == roleId &&
             strcmp(users[i].username, username) == 0 &&
             strcmp(users[i].password, password) == 0 &&
-            users[i].is_active == 1 &&
-            users[i].is_logged_in == 0) {
+            users[i].is_active == 1) {
             *matchedIndex = i;
             return 1;
         }
@@ -65,6 +64,11 @@ int runBankApplication(void) {
     }
     endBankDataTransaction();
 
+    if (!restoreStaleUserSessions()) {
+        fprintf(stderr, "Could not restore stale login sessions; application cannot continue.\n");
+        return 1;
+    }
+
     if (!startBankTransactionWorker()) {
         fprintf(stderr, "Could not start transaction worker; application cannot continue.\n");
         return 1;
@@ -80,8 +84,13 @@ int runBankApplication(void) {
         printf("Choose an option: ");
 
         if (scanf("%d", &selection) != 1) {
+            if (feof(stdin)) {
+                selection = 5;
+                break;
+            }
             printf("Invalid input.\n");
-            while (getchar() != '\n') { }
+            int character;
+            while ((character = getchar()) != '\n' && character != EOF) { }
             selection = 0;
             continue;
         }
@@ -103,40 +112,57 @@ int runBankApplication(void) {
             if (selection == 4) roleId = ROLE_ADMIN;
 
             int loggedIn = 0;
+            int sessionInGracePeriod = 0;
+            uint64_t sessionToken = 0;
             if (!beginBankDataTransaction()) {
                 continue;
             }
             if (!loadUsersFromFile(users, &userCount, "bank_users.dat")) {
                 fprintf(stderr, "Could not load user records; login cancelled.\n");
             } else if (loginUser(users, userCount, roleId, username, password, &loginIndex)) {
-                users[loginIndex].is_logged_in = 1;
-                if (saveUsersToFile(users, userCount, "bank_users.dat")) {
-                    loggedIn = 1;
-                } else {
-                    users[loginIndex].is_logged_in = 0;
-                    fprintf(stderr, "Could not save login state; login cancelled.\n");
+                int claimResult = claimUserSession(users[loginIndex].user_id, &sessionToken);
+                loggedIn = claimResult == 1;
+                if (claimResult == -1) {
+                    sessionInGracePeriod = 1;
+                    printf("Session is still active after an unclean exit. Please wait 30 seconds before trying again.\n");
+                } else if (claimResult == -2) {
+                    sessionInGracePeriod = 1;
+                    printf("This user already has an active session. Log out there or wait for its 30-second timeout after an unclean exit.\n");
+                } else if (!loggedIn) {
+                    fprintf(stderr, "Could not claim the user session; login cancelled.\n");
                 }
             }
             endBankDataTransaction();
+
+            if (loggedIn &&
+                !startUserSessionHeartbeat(users[loginIndex].user_id, sessionToken)) {
+                releaseUserSession(users[loginIndex].user_id, sessionToken);
+                loggedIn = 0;
+            }
 
             if (loggedIn) {
                 printf("Login successful.\n");
                 switch (selection) {
                     case 1:
-                        customerDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id);
+                        customerDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id, sessionToken);
                         break;
                     case 2:
-                        managerDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id);
+                        managerDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id, sessionToken);
                         break;
                     case 3:
-                        employeeDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id);
+                        employeeDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id, sessionToken);
                         break;
                     case 4:
-                        adminDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id);
+                        adminDashboard(users, &userCount, accounts, &accountCount, transactions, &transactionCount, feedback, &feedbackCount, loans, &loanCount, users[loginIndex].user_id, sessionToken);
                         break;
                 }
+                if (!stopUserSessionHeartbeat()) {
+                    fprintf(stderr, "Session heartbeat did not stop cleanly.\n");
+                }
             } else {
-                printf("Invalid username, password, or role.\n");
+                if (!sessionInGracePeriod) {
+                    printf("Invalid username, password, or role.\n");
+                }
             }
         }
     } while (selection != 5);
@@ -150,5 +176,9 @@ int runBankApplication(void) {
 }
 
 int main(void) {
+    if (setvbuf(stdin, NULL, _IONBF, 0) != 0) {
+        fprintf(stderr, "Could not configure console input.\n");
+        return 1;
+    }
     return runBankApplication();
 }
